@@ -1,0 +1,28 @@
+BinderTracer
+Copyright 2026 BinderTracer contributors
+
+This product includes software developed by the BinderTracer contributors.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party components
+-------------------------------------------------------------------------------
+
+1. null-luo/btrace
+   Source:   https://github.com/null-luo/btrace
+   Writeup:  https://bbs.kanxue.com/thread-281895.htm
+
+   The BPF capture loop in daemon/binder_transaction.byte.c and the original
+   ringbuf chunking design originate from this project. The BPF source file
+   itself declares "Dual MIT/GPL" via its SEC("license") string, as required
+   for loading into the Linux kernel. The upstream repository does not ship
+   a top-level LICENSE file and appears to be unmaintained; redistribution
+   here relies on the in-file MIT portion of that dual declaration. If the
+   original author wishes to clarify or revoke this, please open an issue.
+
+2. libbpf headers (libbpf v0.6.1)
+   Source:   https://github.com/libbpf/libbpf
+   License:  BSD-2-Clause
+   Location: daemon/headers/ (see daemon/headers/LICENSE.BSD-2-Clause)
+
+   Vendored unmodified; refresh with daemon/headers/update.sh.
