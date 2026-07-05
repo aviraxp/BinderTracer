@@ -2,7 +2,6 @@ package com.btrace.viewer.ui.monitor
 
 import com.btrace.viewer.data.EventFilter
 import com.btrace.viewer.data.EventRepository
-import com.btrace.viewer.data.SettingsRepository
 import com.btrace.viewer.parser.CoverageBucket
 import com.btrace.viewer.parser.CoverageSnapshot
 import com.btrace.viewer.parser.ParcelParser
@@ -59,7 +58,6 @@ class MonitorViewModelFilterTest {
     private lateinit var mockRepo: EventRepository
     private lateinit var mockConnector: MonitoringServiceConnector
     private lateinit var mockParser: ParcelParser
-    private lateinit var mockSettings: SettingsRepository
     private lateinit var mockController: MonitoringSessionController
     private lateinit var mockSocket: com.btrace.viewer.data.SocketClient
     private lateinit var viewModel: MonitorViewModel
@@ -72,7 +70,6 @@ class MonitorViewModelFilterTest {
         mockRepo = mock()
         mockConnector = mock()
         mockParser = mock()
-        mockSettings = mock()
         mockController = mock()
         mockSocket = mock()
 
@@ -82,6 +79,19 @@ class MonitorViewModelFilterTest {
         whenever(mockRepo.filteredEvents).thenReturn(filteredEventsFlow)
         whenever(mockRepo.eventCount).thenReturn(eventCountFlow)
         whenever(mockRepo.eventRate).thenReturn(eventRateFlow)
+
+        // query 是 suspend:filter 变非空时 init 的 collectLatest 会调它取检索首页。
+        // 默认返回空页,避免未 stub 时返回 null 触发 NPE。suspend stub 须在协程上下文注册。
+        // cursor 传 null(首页),mockito-kotlin any() 不匹配 null,须用 anyOrNull()。
+        kotlinx.coroutines.runBlocking {
+            whenever(
+                mockRepo.query(
+                    any(),                          // filter: 非空
+                    org.mockito.kotlin.anyOrNull(), // cursor: 可空,首页传 null
+                    any(),                          // pageSize: primitive Int,须 any()
+                )
+            ).thenReturn(com.btrace.viewer.data.EventPage(emptyList(), null))
+        }
 
         // setFilter 侧效应:同步更新 filterFlow,模拟真实 EventRepository 行为。
         org.mockito.kotlin.doAnswer { inv ->
@@ -93,10 +103,6 @@ class MonitorViewModelFilterTest {
             filterFlow.value = EventFilter()
             Unit
         }.whenever(mockRepo).clearFilter()
-
-        whenever(mockSettings.maxEventsFlow).thenReturn(
-            MutableStateFlow(EventRepository.DEFAULT_MAX_EVENTS)
-        )
 
         // ── MonitoringSessionController stubs ──
         whenever(mockController.state).thenReturn(MutableStateFlow(MonitoringSessionState.IDLE))
@@ -128,7 +134,6 @@ class MonitorViewModelFilterTest {
             eventRepository = mockRepo,
             parcelParser = mockParser,
             connector = mockConnector,
-            settingsRepository = mockSettings,
             socketClient = mockSocket
         )
         // selectEvent 默认走 Dispatchers.Default,testDispatcher 无法控制其调度;

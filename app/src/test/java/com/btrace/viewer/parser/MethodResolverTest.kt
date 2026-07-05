@@ -74,6 +74,17 @@ class MethodResolverTest {
     }
 
     @Test
+    fun `system reflection prefers getDefaultTransactionName over TRANSACTION field suffix`() {
+        val name = resolver.getMethodName("com.btrace.testfake.IDefaultNameStub", 1)
+        assertEquals("defaultName", name)
+
+        val fallback = resolver.getMethodName("com.btrace.testfake.IDefaultNameStub", 2)
+        assertEquals("fallbackName", fallback)
+
+        verify(assets, never()).open(any())
+    }
+
+    @Test
     fun `unknown interface falls back to methods_json`() {
         stubMethodsJson("""{"com.foo.IFake":{"42":"doFake","7":"doSeven"}}""")
         assertEquals("doFake", resolver.getMethodName("com.foo.IFake", 42))

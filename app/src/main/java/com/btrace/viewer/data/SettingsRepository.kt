@@ -8,7 +8,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.btrace.viewer.utils.CLogUtils
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -28,26 +27,11 @@ class SettingsRepository @Inject constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "SettingsRepository"
-        val KEY_MAX_EVENTS: Preferences.Key<Int> = intPreferencesKey("max_events")
         val KEY_OVERLAY_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("overlay_enabled")
-    }
-
-    val maxEventsFlow: Flow<Int> = context.dataStore.data.map { prefs ->
-        prefs[KEY_MAX_EVENTS] ?: EventRepository.DEFAULT_MAX_EVENTS
     }
 
     val overlayEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_OVERLAY_ENABLED] ?: false
-    }
-
-    suspend fun readMaxEventsBlocking(): Int = maxEventsFlow.first()
-
-    suspend fun setMaxEvents(value: Int) {
-        val clamped = value.coerceIn(EventRepository.MIN_MAX_EVENTS, EventRepository.MAX_MAX_EVENTS)
-        CLogUtils.i(TAG, "setMaxEvents() persist $clamped")
-        context.dataStore.edit { prefs ->
-            prefs[KEY_MAX_EVENTS] = clamped
-        }
     }
 
     suspend fun setOverlayEnabled(enabled: Boolean) {

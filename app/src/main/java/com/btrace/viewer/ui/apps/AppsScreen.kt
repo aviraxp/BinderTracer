@@ -66,7 +66,6 @@ fun AppsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // 下拉刷新状态
     val pullRefreshState = rememberPullRefreshState(
         refreshing = uiState.isRefreshing,
         onRefresh = { viewModel.refreshApps() }
@@ -86,7 +85,6 @@ fun AppsScreen(
         }
     }
 
-    // 显示错误消息
     LaunchedEffect(uiState.errorMessage) {
         uiState.errorMessage?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -110,7 +108,6 @@ fun AppsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // 搜索栏和过滤器
             SearchAndFilterBar(
                 searchQuery = uiState.searchQuery,
                 onSearchQueryChange = viewModel::onSearchQueryChange,
@@ -174,7 +171,6 @@ fun AppsScreen(
                     }
                 }
                 
-                // 下拉刷新指示器
                 PullRefreshIndicator(
                     refreshing = uiState.isRefreshing,
                     state = pullRefreshState,
@@ -183,7 +179,6 @@ fun AppsScreen(
                 )
             }
 
-            // 开始监控按钮
             StartMonitoringButton(
                 selectedApp = uiState.selectedApp,
                 isStarting = uiState.isStartingMonitor,
@@ -263,7 +258,6 @@ private fun AppItem(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 应用图标
             Box(
                 modifier = Modifier
                     .size(48.dp)
@@ -289,7 +283,6 @@ private fun AppItem(
             
             Spacer(modifier = Modifier.width(12.dp))
             
-            // 应用信息
             Column(
                 modifier = Modifier.weight(1f)
             ) {
@@ -315,7 +308,6 @@ private fun AppItem(
             
             Spacer(modifier = Modifier.width(8.dp))
             
-            // 选择状态
             if (isSelected) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,

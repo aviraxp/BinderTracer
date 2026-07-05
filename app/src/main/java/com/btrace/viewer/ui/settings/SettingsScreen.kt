@@ -46,7 +46,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -59,7 +61,6 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // 显示Toast消息
     LaunchedEffect(uiState.toastMessage) {
         uiState.toastMessage?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -94,30 +95,17 @@ fun SettingsScreen(
                 onRefreshAll = { viewModel.checkAllStatus() }
             )
 
-            // 事件缓存上限设置
-            EventBufferLimitSection(
-                currentMax = viewModel.maxEvents.collectAsState().value,
-                range = viewModel.maxEventsRange,
-                onCommit = { viewModel.setMaxEvents(it) }
-            )
-
-            // 监控悬浮窗开关
             OverlaySection(
                 enabled = viewModel.overlayEnabled.collectAsState().value,
                 canDraw = viewModel.canDrawOverlays(context),
                 onToggle = { viewModel.setOverlayEnabled(it, context) }
             )
 
-            // 运行环境诊断
-            DiagnosticsSection(
-                running = uiState.diagnosticsRunning,
-                result = uiState.diagnosticsResult,
-                onRun = { viewModel.runDiagnostics() }
-            )
-
-            // 关于部分
             AboutSection(
-                appVersion = uiState.appVersion
+                appVersion = uiState.appVersion,
+                updateChecking = uiState.updateChecking,
+                updateResult = uiState.updateResult,
+                onCheckUpdate = { viewModel.checkUpdate() }
             )
         }
     }
@@ -182,132 +170,6 @@ private fun OverlaySection(
 }
 
 @Composable
-private fun DiagnosticsSection(
-    running: Boolean,
-    result: com.btrace.viewer.utils.EnvironmentCheckResult?,
-    onRun: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "运行环境诊断",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Button(onClick = onRun, enabled = !running) {
-                    Text(if (running) "运行中…" else "运行诊断")
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "检查 root、libsu、全局挂载命名空间等是否就绪。" +
-                       "App 启动时不再自动执行,需要时手动点。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (result != null) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = result.summary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (result.overallSuccess) Color(0xFF4CAF50)
-                            else MaterialTheme.colorScheme.error
-                )
-                Spacer(Modifier.height(8.dp))
-                result.items.forEach { item ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (item.success) Icons.Default.Check else Icons.Default.Close,
-                            contentDescription = null,
-                            tint = if (item.success) Color(0xFF4CAF50)
-                                   else MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(item.name, style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                item.details,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EventBufferLimitSection(
-    currentMax: Int,
-    range: ClosedFloatingPointRange<Float>,
-    onCommit: (Int) -> Unit
-) {
-    // 拖动时只更新本地 state,松手才写回 DataStore,避免每帧 IO。
-    var localValue by remember(currentMax) { mutableFloatStateOf(currentMax.toFloat()) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "事件缓存",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "最大保留事件数",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    text = localValue.toInt().toString(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Slider(
-                value = localValue,
-                onValueChange = { localValue = it },
-                onValueChangeFinished = { onCommit(localValue.toInt()) },
-                valueRange = range,
-                steps = 0
-            )
-            Text(
-                text = "范围 ${range.start.toInt()}–${range.endInclusive.toInt()}。" +
-                       "调小会立即裁剪掉最老的事件;调大不影响已缓存内容。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
 private fun StatusCheckSection(
     statusCheck: StatusCheckState,
     onCheckRoot: () -> Unit,
@@ -343,7 +205,6 @@ private fun StatusCheckSection(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Root权限状态
             StatusRow(
                 label = "Root权限",
                 status = statusCheck.isRootAvailable,
@@ -456,8 +317,12 @@ private fun StatusIndicator(
 
 @Composable
 private fun AboutSection(
-    appVersion: String
+    appVersion: String,
+    updateChecking: Boolean,
+    updateResult: com.btrace.viewer.utils.UpdateResult?,
+    onCheckUpdate: () -> Unit
 ) {
+    val uriHandler = LocalUriHandler.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -475,7 +340,6 @@ private fun AboutSection(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 版本信息
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -503,20 +367,48 @@ private fun AboutSection(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 检查更新按钮
             Button(
-                onClick = { /* TODO: 实现检查更新功能 */ },
+                onClick = onCheckUpdate,
+                enabled = !updateChecking,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text("检查更新")
+                Text(if (updateChecking) "检查中…" else "检查更新")
+            }
+
+            updateResult?.let { result ->
+                Spacer(modifier = Modifier.height(8.dp))
+                when (result) {
+                    is com.btrace.viewer.utils.UpdateResult.Available -> Text(
+                        text = "发现新版本 ${result.version},点击前往下载",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { uriHandler.openUri(result.url) }
+                    )
+                    is com.btrace.viewer.utils.UpdateResult.UpToDate -> Text(
+                        text = "已是最新版本",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    is com.btrace.viewer.utils.UpdateResult.NoRelease -> Text(
+                        text = "暂无发布版本",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    is com.btrace.viewer.utils.UpdateResult.Error -> Text(
+                        text = "检查失败:${result.message}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 开源地址
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -535,7 +427,6 @@ private fun AboutSection(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 项目说明
             Text(
                 text = "BTrace Viewer 是一个用于可视化 Android Binder 通信的工具。通过 eBPF 技术捕获系统 Binder 调用事件，并以直观的方式展示给用户。",
                 style = MaterialTheme.typography.bodySmall,

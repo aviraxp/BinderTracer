@@ -78,16 +78,16 @@ data class EventFilter(
 }
 
 /**
- * 事件数据仓库 —— 管理 Binder 事件的缓存、FIFO 淘汰与过滤快照分发。
+ * 事件数据仓库 —— 全量事件的单一事实来源(SQLite,[ColdEventStore])+ 内存滑动窗口缓存。
  *
- * 容量(`maxEvents`)从 Phase 0 起改为运行时可配置:由 [SettingsRepository] 读出后
- * 通过 [setMaxEvents] 注入,默认 [DEFAULT_MAX_EVENTS] = 5000。设置项变小会立即裁剪缓存。
+ * 冷热分层对上层透明(见 docs/事件缓存-不限量重构方案.md):
+ *   - 写:每条事件全量落 [ColdEventStore] + 进固定大小内存窗口([BoundedEventBuffer]);
+ *     窗口淘汰≠事件消失(DB 已持有),不再有"限量 / 堆压淘汰"概念。
+ *   - 读:实时列表走内存窗口(高频刷新);检索/分页([query])、详情/配对点查穿透 DB。
  *
  * 性能特性:
- *   - FIFO 缓冲与 id 索引由 [BoundedEventBuffer] 统一封装,add/findById 均 O(1)。
  *   - UI 订阅侧走 tick 合并:写入只置 [dirty],一个后台协程以 [EMIT_INTERVAL_MS]
- *     的周期吞掉中间态,合并发射一次快照。1000+ events/s 下 Compose 重组频率被
- *     钳在 ≤25Hz。
+ *     的周期吞掉中间态,合并发射一次快照。1000+ events/s 下 Compose 重组频率被钳在 ≤25Hz。
  *   - 热路径(addEvent/parseEvent)无 verbose 日志,避免字符串模板分配。
  */
 @Singleton
@@ -98,33 +98,37 @@ class EventRepository @Inject constructor(
     private val appRepository: AppRepository,
     private val interfaceIndex: InterfaceIndex,
     private val serviceManagerCatalog: com.btrace.viewer.parser.ServiceManagerCatalog,
+    // 全量事件落盘的单一事实来源。默认 null = 禁用:JVM 单测直接 new 时不碰 SQLite;
+    // 生产由 DI 注入实例。null 时退化为纯内存窗口(无检索穿透)。
+    private val coldStore: ColdEventStore? = null,
 ) {
     companion object {
         private const val TAG = "EventRepository"
-        const val DEFAULT_MAX_EVENTS = 5000
-        const val MIN_MAX_EVENTS = 500
-        const val MAX_MAX_EVENTS = 50_000
+
+        /**
+         * 内存滑动窗口大小。全量事件落 [ColdEventStore],内存只保留最近这么多条供实时列表高频刷新;
+         * 淘汰出窗口的事件已在 DB 里,不算数据丢失。不再是用户可配上限(见 docs 重构方案 §10)。
+         */
+        const val WINDOW_SIZE = 5000
 
         private const val EMIT_INTERVAL_MS = 40L
+
+        /** 检索默认页大小(键集游标分页,见 [query])。 */
+        const val DEFAULT_PAGE_SIZE = 100
     }
 
-    // lock 仅保护 rate 计数器、_eventCount、setMaxEvents 的同步;
-    // FIFO 队列与 id 索引由 buffer 自身负责。
+    // lock 保护 rate 计数器、_eventCount、totalCount 的同步;窗口与 id 索引由 buffer 自身负责。
     private val lock = Any()
 
-    // spec § 6.5:覆盖率统计,与 buffer 同生命周期。buffer 触发淘汰时回调进来递减,
-    // addEvent 路径直接增量,clearEvents 跟着归零。
-    // 必须早于 buffer 声明 —— buffer 的 .also { onEvicted = ... } 闭包捕获 coverageStats,
-    // 顺序反过来 Kotlin 编译期不会报错但运行期会 NPE。
+    // spec § 6.5:覆盖率统计。全量落盘后 coverage 是**累计**语义(onEventAdded 增,窗口淘汰不减,
+    // clearEvents 归零),反映本会话全量事件的覆盖分布,而非内存窗口内的分布。
     private val coverageStats = CoverageStats()
 
-    // 容量受限的 FIFO 缓冲(deque + id 索引 + 截断),线程安全由内部 synchronized 提供。
-    private val buffer = BoundedEventBuffer(DEFAULT_MAX_EVENTS).also {
-        // buffer 在 add/setCapacity/clear 时回调被淘汰的事件,这里直接喂给 CoverageStats。
-        // 回调发生在 lock 内部(addEvent / setMaxEvents / clearEvents 都已 synchronized),
-        // CoverageStats 自身用 AtomicLong,不会再次加锁。
-        it.onEvicted = { evicted -> coverageStats.onEventEvicted(evicted) }
-    }
+    // 固定大小内存滑动窗口(实时列表用)。全量已落 DB,窗口淘汰不再落盘 / 不减 coverage,故不挂 onEvicted。
+    private val buffer = BoundedEventBuffer(WINDOW_SIZE)
+
+    // 本会话累计事件数(全量,含已滑出窗口的)。lock 内读写。
+    private var totalCount = 0
 
     private val _coverage = MutableStateFlow(CoverageSnapshot.EMPTY)
     val coverageFlow: StateFlow<CoverageSnapshot> = _coverage.asStateFlow()
@@ -185,24 +189,15 @@ class EventRepository @Inject constructor(
     }
 
     /**
-     * 调整缓存上限。新值 < 当前 size 时立即裁剪最老事件。
-     *
-     * 取值范围 [[MIN_MAX_EVENTS], [MAX_MAX_EVENTS]] —— 太小没意义(5 秒就刷光了),
-     * 太大会占几十 MB 堆。越界值会被 clamp 到边界,而非抛异常,避免 UI 滑块边缘
-     * 抖动崩主流程。
+     * 全量检索一页(过滤条件下推 SQL,键集游标分页)。实时列表走内存窗口([filteredEvents]),
+     * 这里是"停下来全量翻查"的入口:cursor=null 取最新一页,返回 nextCursor=null 表示到底。
+     * coldStore 未注入(纯内存单测)时返回空页。
      */
-    fun setMaxEvents(value: Int) {
-        val clamped = value.coerceIn(MIN_MAX_EVENTS, MAX_MAX_EVENTS)
-        synchronized(lock) {
-            if (clamped == buffer.capacity()) return
-            CLogUtils.i(TAG, "setMaxEvents() ${buffer.capacity()} -> $clamped")
-            buffer.setCapacity(clamped)
-            _eventCount.value = buffer.size()
-        }
-        dirty.set(true)
-    }
-
-    fun getMaxEvents(): Int = synchronized(lock) { buffer.capacity() }
+    suspend fun query(
+        filter: EventFilter = _currentFilter.value,
+        cursor: Long? = null,
+        pageSize: Int = DEFAULT_PAGE_SIZE,
+    ): EventPage = coldStore?.query(filter, cursor, pageSize) ?: EventPage(emptyList(), null)
 
     /**
      * 添加新事件。调用方保证单协程串行(当前为 MonitorViewModel 的 collect 协程)。
@@ -213,15 +208,15 @@ class EventRepository @Inject constructor(
     fun addEvent(event: BinderEvent) {
         parseEvent(event)
 
-        // BoundedEventBuffer 不是线程安全的(纯逻辑 / JVM 测试无依赖),
-        // 必须由调用方串行化。这里和 setMaxEvents/getMaxEvents/emitSnapshot/
-        // clearEvents/getEvent 共用同一把 lock。
+        // 全量落盘:每条事件都归档到 DB(offer 非阻塞入队,线程安全,放锁外不拖慢热路径)。
+        coldStore?.offer(event)
+
+        // BoundedEventBuffer 不是线程安全的,由调用方串行化。与 emitSnapshot / clearEvents /
+        // getEvent 等共用同一把 lock。
         synchronized(lock) {
-            // CoverageStats 增量发生在 buffer.add 之前,这样 buffer 满时
-            // onEvicted 回调里的 onEventEvicted 才能找到对应的 +1,净结果为 0。
-            coverageStats.onEventAdded(event)
-            buffer.add(event)
-            _eventCount.value = buffer.size()
+            coverageStats.onEventAdded(event)   // 累计,窗口淘汰不再递减
+            buffer.add(event)                    // 进内存窗口,满则丢最老(已落 DB)
+            _eventCount.value = ++totalCount     // 全量累计,非窗口 size
             val now = System.currentTimeMillis()
             lastSecondCount++
             if (now - lastSecondTime >= 1000) {
@@ -331,7 +326,7 @@ class EventRepository @Inject constructor(
         synchronized(lock) {
             coverageStats.onEventAdded(event)
             buffer.add(event)
-            _eventCount.value = buffer.size()
+            _eventCount.value = ++totalCount
         }
     }
 
@@ -416,10 +411,10 @@ class EventRepository @Inject constructor(
     fun clearEvents() {
         CLogUtils.i(TAG, "clearEvents() 清空所有事件")
         synchronized(lock) {
-            // buffer.clear() 会对每个事件触发 onEvicted → coverageStats.onEventEvicted,
-            // 自然把所有桶递减到 0。reset() 是冗余兜底,挡住 onEvicted 回调遗漏的情况。
+            // buffer 未挂 onEvicted,clear 不回调;coverageStats.reset() 显式把全量累计归零。
             buffer.clear()
             coverageStats.reset()
+            totalCount = 0
             _eventCount.value = 0
             _eventRate.value = 0
             lastSecondCount = 0
@@ -428,12 +423,17 @@ class EventRepository @Inject constructor(
         _filteredEvents.value = emptyList()
         _coverage.value = CoverageSnapshot.EMPTY
         dirty.set(false)
+        // 冷层清空放锁外异步:DELETE 是 IO,别阻塞调用线程(MonitorViewModel.clearEvents 非协程)。
+        scope.launch { coldStore?.clear() }
     }
 
     /**
-     * 获取事件详情 —— O(1) 查找。
+     * 获取事件详情 —— 先 O(1) 查内存热层,miss 再穿透冷层(落盘的老事件)。
      */
-    fun getEvent(eventId: Long): BinderEvent? = synchronized(lock) { buffer.findById(eventId) }
+    suspend fun getEvent(eventId: Long): BinderEvent? {
+        synchronized(lock) { buffer.findById(eventId) }?.let { return it }
+        return coldStore?.getById(eventId)
+    }
 
     /**
      * 反查与 [request] 配对的 reply 事件。
@@ -448,16 +448,19 @@ class EventRepository @Inject constructor(
      * 扫描走 [BoundedEventBuffer.findFirst] 锁内遍历,不构造 List 副本 ——
      * 容量上限 50 000 时也 < 1ms,与 emitSnapshot 同模式不破坏并发不变量。
      *
-     * **边界**:reply 已到但因 buffer FIFO 容量被淘汰时,本方法返回 null,UI 退化
-     * 到「等待 reply…」分支(LinkedReplySection 的文案已覆盖该可能性)。
+     * 热层 miss 时穿透 [coldStore] 冷层(reply 已被堆压转存落盘的情况)。
+     *
+     * **边界**:reply 尚未到达 / 冷热层都 miss 时返回 null,UI 退化到「等待 reply…」
+     * 分支(LinkedReplySection 的文案已覆盖该可能性)。
      */
-    fun findReplyForRequest(request: BinderEvent): BinderEvent? {
+    suspend fun findReplyForRequest(request: BinderEvent): BinderEvent? {
         if (request.isReply) return null
         if (request.pairId == 0L) return null
         val targetPairId = request.pairId
-        return synchronized(lock) {
+        synchronized(lock) {
             buffer.findFirst { it.isReply && it.pairId == targetPairId }
-        }
+        }?.let { return it }
+        return coldStore?.findPair(targetPairId, wantReply = true)
     }
 
     /**
@@ -465,30 +468,18 @@ class EventRepository @Inject constructor(
      * reply 详情页用,填充「请求数据」section。reply 帧的 pairId 由 BPF 端在 reply 路径
      * 直接写入(spec 2026-05-09 daemon-reply-uid-filter),与 request 的 pairId 同源。
      *
-     * **边界**:request 已被 buffer FIFO 容量淘汰(reply 还在)时返回 null,UI 退化到
-     * 「配对 request 已被淘汰」分支(orphan reply 同等)。
+     * 热层 miss 时穿透 [coldStore] 冷层(request 已被堆压转存落盘的情况)。
+     *
+     * **边界**:冷热层都 miss 时返回 null,UI 退化到「配对 request 已被淘汰」分支
+     * (orphan reply 同等)。
      */
-    fun findRequestForReply(reply: BinderEvent): BinderEvent? {
+    suspend fun findRequestForReply(reply: BinderEvent): BinderEvent? {
         if (!reply.isReply) return null
         if (reply.pairId == 0L) return null
         val targetPairId = reply.pairId
-        return synchronized(lock) {
+        synchronized(lock) {
             buffer.findFirst { !it.isReply && it.pairId == targetPairId }
-        }
-    }
-
-    /**
-     * 添加模拟事件（用于UI测试）
-     */
-    fun addMockEvents() {
-        CLogUtils.i(TAG, "addMockEvents() 添加模拟事件")
-        val mockEvents = listOf(
-            BinderEvent.createMock("android.app.IActivityManager", "startActivity", "com.example.app", 10086),
-            BinderEvent.createMock("android.content.pm.IPackageManager", "getPackageInfo", "com.example.app", 10086),
-            BinderEvent.createMock("android.app.IActivityManager", "broadcastIntent", "com.example.app", 10086),
-            BinderEvent.createMock("android.os.IServiceManager", "getService", "com.example.app", 10086),
-            BinderEvent.createMock("android.app.INotificationManager", "enqueueNotificationWithTag", "com.example.app", 10086)
-        )
-        mockEvents.forEach { addEvent(it) }
+        }?.let { return it }
+        return coldStore?.findPair(targetPairId, wantReply = false)
     }
 }

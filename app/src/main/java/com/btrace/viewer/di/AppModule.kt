@@ -5,7 +5,6 @@ import com.btrace.viewer.BuildConfig
 import com.btrace.viewer.data.AppRepository
 import com.btrace.viewer.data.EventRepository
 import com.btrace.viewer.data.SocketClient
-import com.btrace.viewer.data.SettingsBootstrapper
 import com.btrace.viewer.data.SettingsRepository
 import com.btrace.viewer.parser.AppClassLoaderRegistry
 import com.btrace.viewer.parser.ApplicationLifecycleObserver
@@ -17,13 +16,11 @@ import com.btrace.viewer.parser.PersistentSignatureCache
 import com.btrace.viewer.parser.StaticMethodTable
 import com.btrace.viewer.parser.TransactionPairer
 import com.btrace.viewer.root.BTraceManager
-import com.btrace.viewer.root.MountNamespaceManager
 import com.btrace.viewer.root.RootManager
 import com.btrace.viewer.service.MonitoringServiceConnector
 import com.btrace.viewer.service.MonitoringSessionController
 import com.btrace.viewer.service.RealSessionTransport
 import com.btrace.viewer.service.SessionTransport
-import com.btrace.viewer.utils.MountNamespaceVerifier
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -48,23 +45,6 @@ object AppModule {
         rootManager: RootManager
     ): BTraceManager {
         return BTraceManager(context, rootManager)
-    }
-
-    @Provides
-    @Singleton
-    fun provideMountNamespaceManager(
-        rootManager: RootManager
-    ): MountNamespaceManager {
-        return MountNamespaceManager(rootManager)
-    }
-
-    @Provides
-    @Singleton
-    fun provideMountNamespaceVerifier(
-        rootManager: RootManager,
-        mountNamespaceManager: MountNamespaceManager
-    ): MountNamespaceVerifier {
-        return MountNamespaceVerifier(rootManager, mountNamespaceManager)
     }
 
     @Provides
@@ -171,10 +151,11 @@ object AppModule {
         appRepository: AppRepository,
         interfaceIndex: InterfaceIndex,
         serviceManagerCatalog: com.btrace.viewer.parser.ServiceManagerCatalog,
+        coldStore: com.btrace.viewer.data.ColdEventStore,
     ): EventRepository {
         return EventRepository(
             parcelParser, methodResolver, argumentDecoder, appRepository, interfaceIndex,
-            serviceManagerCatalog,
+            serviceManagerCatalog, coldStore,
         )
     }
 
@@ -192,15 +173,6 @@ object AppModule {
         @ApplicationContext context: Context
     ): SettingsRepository {
         return SettingsRepository(context)
-    }
-
-    @Provides
-    @Singleton
-    fun provideSettingsBootstrapper(
-        settingsRepository: SettingsRepository,
-        eventRepository: EventRepository
-    ): SettingsBootstrapper {
-        return SettingsBootstrapper(settingsRepository, eventRepository)
     }
 
     @Provides

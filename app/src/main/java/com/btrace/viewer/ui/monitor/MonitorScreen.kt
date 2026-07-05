@@ -128,10 +128,9 @@ fun MonitorScreen(
         return
     }
 
-    val events by viewModel.events.collectAsState()
+    val events by viewModel.displayEvents.collectAsState()
     val eventCount by viewModel.eventCount.collectAsState()
     val eventRate by viewModel.eventRate.collectAsState()
-    val maxEvents by viewModel.maxEvents.collectAsState()
     val coverage by viewModel.coverage.collectAsState()
     val currentFilter by viewModel.currentFilter.collectAsState()
     val selectedDetail by viewModel.selectedEvent.collectAsState()
@@ -254,15 +253,13 @@ fun MonitorScreen(
             // 统计信息栏
             StatsBar(
                 eventCount = eventCount,
-                maxEvents = maxEvents,
                 eventRate = eventRate
             )
             
             // 事件列表
             if (events.isEmpty()) {
                 EmptyState(
-                    monitoringState = uiState.monitoringState,
-                    onAddMockData = viewModel::addMockData
+                    monitoringState = uiState.monitoringState
                 )
             } else {
                 // 底层数据按时间升序追加(events[0] 最旧, events.last 最新),LazyColumn 顺序渲染
@@ -295,10 +292,22 @@ fun MonitorScreen(
                 // 避免清空/筛选导致 size 缩小时也强制滚动。
                 LaunchedEffect(events.size) {
                     val current = events.size
-                    if (current > lastEventCount && followTail && current > 0) {
+                    // 跟随尾部只在实时模式(无过滤);检索模式列表是 DB 分页(最新在顶),不自动滚。
+                    if (current > lastEventCount && followTail && current > 0 && currentFilter.isEmpty()) {
                         listState.animateScrollToItem(current) // 末尾的 Spacer 索引,确保最后一条事件贴底
                     }
                     lastEventCount = current
+                }
+
+                // 检索模式(有过滤):列表是全量 DB 分页,滑到接近底部时加载下一页更旧的匹配。
+                if (!currentFilter.isEmpty()) {
+                    LaunchedEffect(listState, events.size) {
+                        snapshotFlow {
+                            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        }.collect { lastVisible ->
+                            if (lastVisible >= events.size - 5) viewModel.loadMore()
+                        }
+                    }
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -342,7 +351,6 @@ fun MonitorScreen(
 @Composable
 private fun StatsBar(
     eventCount: Int,
-    maxEvents: Int,
     eventRate: Int
 ) {
     Row(
@@ -352,7 +360,7 @@ private fun StatsBar(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
-            text = "事件: $eventCount / $maxEvents",
+            text = "事件: $eventCount",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -366,8 +374,7 @@ private fun StatsBar(
 
 @Composable
 private fun EmptyState(
-    monitoringState: MonitoringState,
-    onAddMockData: () -> Unit
+    monitoringState: MonitoringState
 ) {
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -388,12 +395,6 @@ private fun EmptyState(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             
-            // 添加模拟数据按钮（用于UI测试）
-            if (monitoringState == MonitoringState.IDLE) {
-                OutlinedButton(onClick = onAddMockData) {
-                    Text("添加测试数据")
-                }
-            }
         }
     }
 }

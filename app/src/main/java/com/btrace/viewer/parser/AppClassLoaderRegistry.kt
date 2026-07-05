@@ -22,7 +22,7 @@ import javax.inject.Singleton
  * 目标 App 的 ClassLoader 注册表
  *
  * 用途:第三方 App 的 AIDL `$Stub` 类不在 BTrace Viewer 的 classpath 里,
- * 系统反射读不到它们的 `TRANSACTION_*` 常量。本类做一次:
+ * 系统反射读不到它们的 `getDefaultTransactionName(int)` / `TRANSACTION_*` 映射。本类做一次:
  *   1) 用 root 把目标 App 的 base.apk 复制到本 App 的私有目录,chown 到本 App uid;
  *   2) 用 DexClassLoader 加载,parent 指向本 App 的 classloader(framework 类走 bootclasspath);
  *   3) 缓存 ClassLoader,以及 `(packageName, interfaceName) → code→name` 映射。
@@ -336,6 +336,12 @@ open class AppClassLoaderRegistry @Inject constructor(
 
         val map = try {
             val stubCls = Class.forName("$interfaceName\$Stub", false, cl)
+            val getDefaultName = try {
+                stubCls.getDeclaredMethod("getDefaultTransactionName", Int::class.javaPrimitiveType)
+                    .also { it.isAccessible = true }
+            } catch (_: Throwable) {
+                null
+            }
             val out = HashMap<Int, String>()
             for (f in stubCls.declaredFields) {
                 if (!Modifier.isStatic(f.modifiers)) continue
@@ -343,7 +349,18 @@ open class AppClassLoaderRegistry @Inject constructor(
                 if (!f.name.startsWith(TRANSACTION_PREFIX)) continue
                 try {
                     f.isAccessible = true
-                    out[f.getInt(null)] = f.name.removePrefix(TRANSACTION_PREFIX)
+                    val code = f.getInt(null)
+                    val methodName = if (getDefaultName != null) {
+                        try {
+                            getDefaultName.invoke(null, code) as? String
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    } else {
+                        null
+                    }?.takeIf { it.isNotEmpty() }
+                        ?: f.name.removePrefix(TRANSACTION_PREFIX)
+                    out[code] = methodName
                 } catch (t: Throwable) {
                     CLogUtils.v(TAG, "跳过字段 $packageName/$interfaceName.${f.name}: ${t.message}")
                 }

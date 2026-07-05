@@ -209,6 +209,19 @@ class AppClassLoaderRegistryTest {
         assertNull(registry.getPackageMeta("com.never.touched"))
     }
 
+    @Test
+    fun `getStubMap prefers getDefaultTransactionName over TRANSACTION field suffix`() {
+        registry.forceSetClassLoaderForTest("com.fake.app", javaClass.classLoader!!)
+
+        val stubMap = registry.getStubMap(
+            "com.fake.app",
+            "com.btrace.testfake.IDefaultNameStub",
+        )
+
+        assertEquals("defaultName", stubMap?.get(1))
+        assertEquals("fallbackName", stubMap?.get(2))
+    }
+
     // ─── attachCacheInvalidators:APK 升级触发三件套(B2 真实断言)─────
 
     @Test

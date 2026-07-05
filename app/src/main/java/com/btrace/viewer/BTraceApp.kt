@@ -52,12 +52,11 @@ class BTraceApp : Application() {
 
         com.btrace.viewer.service.MonitoringNotification.ensureChannel(this)
 
-        // 把持久化的设置项装载到 EventRepository 等单例中
+        // Hilt EntryPoint:Application 不能 @Inject 字段,用它取单例做启动初始化。
         val entryPoint = dagger.hilt.android.EntryPointAccessors.fromApplication(
             this,
             BTraceAppEntryPoint::class.java
         )
-        entryPoint.settingsBootstrapper().start()
 
         // spec § 6.4 第 1 档:异步触发 APK 级"接口名 → 包名"反查目录构建。
         // fire-and-forget,不阻塞主线程;builder 内部先 loadFromDisk 让查询立即可用,
@@ -90,7 +89,6 @@ class BTraceApp : Application() {
 @dagger.hilt.EntryPoint
 @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
 interface BTraceAppEntryPoint {
-    fun settingsBootstrapper(): com.btrace.viewer.data.SettingsBootstrapper
     fun interfaceIndexBuilder(): com.btrace.viewer.parser.InterfaceIndexBuilder
     fun applicationLifecycleObserver(): com.btrace.viewer.parser.ApplicationLifecycleObserver
 }

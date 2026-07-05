@@ -13,6 +13,10 @@ import javax.inject.Singleton
 @Singleton
 class RootManager @Inject constructor() {
 
+    companion object {
+        private const val TAG = "RootManager"
+    }
+
     private var shellInstance: Shell? = null
     
     /**
@@ -75,25 +79,4 @@ class RootManager @Inject constructor() {
         shellInstance?.close()
         shellInstance = null
     }
-    
-    /**
-     * 获取Shell状态信息
-     * @return Shell状态描述
-     */
-    suspend fun getShellStatus(): String = withContext(Dispatchers.IO) {
-        try {
-            val shell = getShell()
-            buildString {
-                append("Shell状态: ")
-                append("isRoot=${shell.isRoot}, ")
-                append("isAlive=${shell.isAlive}")
-                if (shell.isRoot) {
-                    append(", 全局挂载命名空间已启用")
-                }
-            }
-        } catch (e: Exception) {
-            "Shell状态: 未初始化或无Root权限 - ${e.message}"
-        }
-    }
-
 }

@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.btrace.viewer.data.EventFilter
 import com.btrace.viewer.data.EventRepository
-import com.btrace.viewer.data.SettingsRepository
 import com.btrace.viewer.data.SocketClient
 import com.btrace.viewer.model.BinderEvent
 import com.btrace.viewer.parser.CoverageBucket
@@ -16,12 +15,15 @@ import com.btrace.viewer.service.MonitoringSessionState
 import com.btrace.viewer.utils.CLogUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -42,7 +44,6 @@ class MonitorViewModel @Inject constructor(
     private val eventRepository: EventRepository,
     private val parcelParser: ParcelParser,
     private val connector: MonitoringServiceConnector,
-    private val settingsRepository: SettingsRepository,
     private val socketClient: SocketClient
 ) : ViewModel() {
 
@@ -126,9 +127,19 @@ class MonitorViewModel @Inject constructor(
     private val _selectedEvent = MutableStateFlow<EventDetail?>(null)
     val selectedEvent: StateFlow<EventDetail?> = _selectedEvent.asStateFlow()
 
-    val events = eventRepository.filteredEvents.stateIn(
-        viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList()
-    )
+    // 检索分页状态(仅有过滤时启用)。pageCursor/pageEndReached/loadingPage 只在主线程协程读写。
+    private val _pagedEvents = MutableStateFlow<List<BinderEvent>>(emptyList())
+    private var pageCursor: Long? = null
+    private var pageEndReached = false
+    private var loadingPage = false
+
+    // 列表数据源:无过滤 → 实时内存窗口(最新在底,跟随尾部);有过滤 → 全量 DB 分页
+    // (最新匹配在顶,下滚 loadMore 加载更旧历史)。同一个列表,数据源在此内部切换,UI 不感知。
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val displayEvents: StateFlow<List<BinderEvent>> =
+        eventRepository.currentFilter.flatMapLatest { f ->
+            if (f.isEmpty()) eventRepository.filteredEvents else _pagedEvents
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val eventCount = eventRepository.eventCount.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), 0
     )
@@ -138,12 +149,6 @@ class MonitorViewModel @Inject constructor(
     val currentFilter = eventRepository.currentFilter.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), EventFilter()
     )
-    // 监控页 StatsBar 显示 "事件 N / M" 中的 M。来源是 SettingsRepository,
-    // 跟用户拖滑块实时同步;EventRepository 内部容量也由 SettingsBootstrapper 推同一份值。
-    val maxEvents = settingsRepository.maxEventsFlow.stateIn(
-        viewModelScope, SharingStarted.WhileSubscribed(5000), EventRepository.DEFAULT_MAX_EVENTS
-    )
-
     // spec § 6.5:覆盖率仪表盘的源 StateFlow。EventRepository 在 emit tick 里推一次,
     // UI 顶部卡片直接 collectAsState。
     val coverage = eventRepository.coverageFlow.stateIn(
@@ -160,6 +165,21 @@ class MonitorViewModel @Inject constructor(
         viewModelScope.launch {
             val controller = connector.ensureBound()
             observeController(controller)
+        }
+        // 过滤变化时重建检索分页首页(全量 DB 查);无过滤则清空,列表 flatMapLatest 切回实时窗口。
+        viewModelScope.launch {
+            eventRepository.currentFilter.collectLatest { f ->
+                if (f.isEmpty()) {
+                    _pagedEvents.value = emptyList()
+                    pageCursor = null
+                    pageEndReached = false
+                } else {
+                    val page = eventRepository.query(f, cursor = null, pageSize = EventRepository.DEFAULT_PAGE_SIZE)
+                    _pagedEvents.value = page.items
+                    pageCursor = page.nextCursor
+                    pageEndReached = page.nextCursor == null
+                }
+            }
         }
     }
 
@@ -268,6 +288,25 @@ class MonitorViewModel @Inject constructor(
     }
 
     fun clearEvents() { eventRepository.clearEvents() }
+
+    /**
+     * 检索模式(有过滤)滑到底:加载下一页更旧的匹配 append 到列表尾。
+     * 无过滤 / 已到底 / 正在加载时空操作(幂等,可被滚动重复触发)。
+     */
+    fun loadMore() {
+        val f = eventRepository.currentFilter.value
+        if (f.isEmpty() || pageEndReached || loadingPage) return
+        val cursor = pageCursor ?: return
+        loadingPage = true
+        viewModelScope.launch {
+            val page = eventRepository.query(f, cursor, EventRepository.DEFAULT_PAGE_SIZE)
+            _pagedEvents.value = _pagedEvents.value + page.items
+            pageCursor = page.nextCursor
+            pageEndReached = page.nextCursor == null
+            loadingPage = false
+        }
+    }
+
     fun clearErrorMessage() { _uiState.value = _uiState.value.copy(errorMessage = null) }
 
     fun selectEvent(eventId: Long) {
@@ -299,12 +338,4 @@ class MonitorViewModel @Inject constructor(
     }
 
     fun dismissDetail() { _selectedEvent.value = null }
-
-    fun addMockData() {
-        eventRepository.addMockEvents()
-        _uiState.value = _uiState.value.copy(
-            monitoringState = MonitoringState.MONITORING,
-            targetAppName = "示例应用"
-        )
-    }
 }

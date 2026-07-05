@@ -6,6 +6,7 @@ import com.btrace.viewer.parser.InterfaceIndex
 import com.btrace.viewer.parser.MethodResolver
 import com.btrace.viewer.parser.ParcelArgumentDecoder
 import com.btrace.viewer.parser.ParcelParser
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -150,7 +151,7 @@ class EventRepositoryTest {
         val reply = newEvent(id = 1, isReply = true, pairId = 100L)
         repo.addEventDirectForTest(reply)
         // reply 不再有 reply。
-        assertNull(repo.findReplyForRequest(reply))
+        assertNull(runBlocking { repo.findReplyForRequest(reply) })
     }
 
     @Test
@@ -160,7 +161,7 @@ class EventRepositoryTest {
         repo.addEventDirectForTest(request)
         repo.addEventDirectForTest(replyOrphan)
         // pairId == 0:daemon 端无配对能力,即便 buffer 里有同 pairId=0 的 reply 也不算配对。
-        assertNull(repo.findReplyForRequest(request))
+        assertNull(runBlocking { repo.findReplyForRequest(request) })
     }
 
     @Test
@@ -170,7 +171,7 @@ class EventRepositoryTest {
         repo.addEventDirectForTest(request)
         repo.addEventDirectForTest(reply)
 
-        val matched = repo.findReplyForRequest(request)
+        val matched = runBlocking { repo.findReplyForRequest(request) }
         assertNotNull(matched)
         assertSame(reply, matched)
     }
@@ -180,7 +181,7 @@ class EventRepositoryTest {
         val request = newEvent(id = 1, isReply = false, pairId = 42L)
         repo.addEventDirectForTest(request)
         // 还没配对 reply 到达。
-        assertNull(repo.findReplyForRequest(request))
+        assertNull(runBlocking { repo.findReplyForRequest(request) })
     }
 
     @Test
@@ -189,7 +190,7 @@ class EventRepositoryTest {
         val unrelatedReply = newEvent(id = 2, isReply = true, pairId = 99L)
         repo.addEventDirectForTest(request)
         repo.addEventDirectForTest(unrelatedReply)
-        assertNull(repo.findReplyForRequest(request))
+        assertNull(runBlocking { repo.findReplyForRequest(request) })
     }
 
     @Test
@@ -203,7 +204,7 @@ class EventRepositoryTest {
         repo.addEventDirectForTest(reply2)
 
         // FIFO 顺序遍历 → 取先入队的那条,与"幂等优先"语义一致。
-        assertSame(reply1, repo.findReplyForRequest(request))
+        assertSame(reply1, runBlocking { repo.findReplyForRequest(request) })
     }
 
     // === reply → request 反向 lookup 行为验证 ===
@@ -212,7 +213,7 @@ class EventRepositoryTest {
     fun `findRequestForReply returns null when event is request`() {
         val request = newEvent(id = 1, isReply = false, pairId = 42L)
         repo.addEventDirectForTest(request)
-        assertNull(repo.findRequestForReply(request))
+        assertNull(runBlocking { repo.findRequestForReply(request) })
     }
 
     @Test
@@ -222,7 +223,7 @@ class EventRepositoryTest {
         repo.addEventDirectForTest(replyOrphan)
         repo.addEventDirectForTest(request)
         // orphan reply(无配对 pairId)即便 buffer 里有 pairId=0 的 request 也不算配对。
-        assertNull(repo.findRequestForReply(replyOrphan))
+        assertNull(runBlocking { repo.findRequestForReply(replyOrphan) })
     }
 
     @Test
@@ -232,7 +233,7 @@ class EventRepositoryTest {
         repo.addEventDirectForTest(request)
         repo.addEventDirectForTest(reply)
 
-        val matched = repo.findRequestForReply(reply)
+        val matched = runBlocking { repo.findRequestForReply(reply) }
         assertNotNull(matched)
         assertSame(request, matched)
     }
@@ -243,7 +244,7 @@ class EventRepositoryTest {
         // 「配对 request 已被 FIFO 淘汰」分支。
         val orphanedReply = newEvent(id = 1, isReply = true, pairId = 42L)
         repo.addEventDirectForTest(orphanedReply)
-        assertNull(repo.findRequestForReply(orphanedReply))
+        assertNull(runBlocking { repo.findRequestForReply(orphanedReply) })
     }
 
     @Test
@@ -252,6 +253,6 @@ class EventRepositoryTest {
         val reply = newEvent(id = 2, isReply = true, pairId = 42L)
         repo.addEventDirectForTest(unrelatedRequest)
         repo.addEventDirectForTest(reply)
-        assertNull(repo.findRequestForReply(reply))
+        assertNull(runBlocking { repo.findRequestForReply(reply) })
     }
 }

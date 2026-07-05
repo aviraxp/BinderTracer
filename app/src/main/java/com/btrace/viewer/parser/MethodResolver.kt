@@ -8,7 +8,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 方法签名。methodName 来自 $Stub 的 TRANSACTION_xxx 常量;paramTypes 来自接口类反射,
+ * 方法签名。methodName 优先来自 $Stub.getDefaultTransactionName(code),不可用时来自
+ * $Stub 的 TRANSACTION_xxx 常量;paramTypes 来自接口类反射,
  * 每一项是参数的 canonical Java 类型名(例如 `java.lang.String`、`android.os.Bundle`、`int[]`、
  * `java.util.List<java.lang.String>`)。returnType 同样来自反射(`Method.getGenericReturnType()`),
  * 后续 P3-B 用来做 reply 返回值结构化解码。
@@ -29,7 +30,8 @@ data class MethodSignature(
  *
  * 解析顺序:
  *   1. 反射 AIDL 生成的 `$Stub` 类,枚举 `public static final int TRANSACTION_* = N`
- *      常量 —— 动态、完整、始终和当前设备 Android 版本一致。
+ *      常量,优先通过 `getDefaultTransactionName(int)` 还原正式方法名 ——
+ *      动态、完整、始终和当前设备 Android 版本一致。
  *   2. 兜底查询 assets/methods.json —— 对 `$Stub` 不在 classpath / 被 HiddenApi
  *      拦截 / 非 AIDL 接口的情况提供静态映射。
  *   3. 都找不到返回 "code=N"。
@@ -405,6 +407,12 @@ class MethodResolver @Inject constructor(
     private fun loadStubTransactions(interfaceName: String): Map<Int, String> {
         return try {
             val stubCls = Class.forName("$interfaceName\$Stub")
+            val getDefaultName = try {
+                stubCls.getDeclaredMethod("getDefaultTransactionName", Int::class.javaPrimitiveType)
+                    .also { it.isAccessible = true }
+            } catch (_: Throwable) {
+                null
+            }
             val result = HashMap<Int, String>()
             for (field in stubCls.declaredFields) {
                 if (!Modifier.isStatic(field.modifiers)) continue
@@ -415,7 +423,16 @@ class MethodResolver @Inject constructor(
                 try {
                     field.isAccessible = true
                     val code = field.getInt(null)
-                    val methodName = name.removePrefix(TRANSACTION_PREFIX)
+                    val methodName = if (getDefaultName != null) {
+                        try {
+                            getDefaultName.invoke(null, code) as? String
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    } else {
+                        null
+                    }?.takeIf { it.isNotEmpty() }
+                        ?: name.removePrefix(TRANSACTION_PREFIX)
                     result[code] = methodName
                 } catch (t: Throwable) {
                     CLogUtils.v(TAG, "loadStubTransactions() 跳过字段 $interfaceName.$name: ${t.message}")

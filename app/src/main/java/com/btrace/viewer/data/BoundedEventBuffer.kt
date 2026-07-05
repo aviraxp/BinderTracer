@@ -18,8 +18,12 @@ class BoundedEventBuffer(capacity: Int) {
     @Volatile
     private var capacity: Int = capacity
 
-    private val deque = ArrayDeque<BinderEvent>(capacity + 16)
-    private val index = HashMap<Long, BinderEvent>(capacity * 2)
+    // 预分配只是省 rehash 的性能优化:直接按 capacity 算会在 UNLIMITED(Int.MAX_VALUE)时
+    // 溢出成负数 → ArrayDeque/HashMap 构造抛 IllegalArgumentException。夹到 64K 上界,
+    // 超出部分交给容器自动扩容。
+    private val prealloc = capacity.coerceAtMost(1 shl 16)
+    private val deque = ArrayDeque<BinderEvent>(prealloc + 16)
+    private val index = HashMap<Long, BinderEvent>(prealloc * 2)
 
     /**
      * 容量满 / setCapacity 调小时被淘汰的事件回调。EventRepository 用它递减
@@ -49,6 +53,25 @@ class BoundedEventBuffer(capacity: Int) {
     }
 
     fun capacity(): Int = capacity
+
+    /**
+     * 不改变 [capacity],仅把当前 size 削到 <= [target](从最老端淘汰,触发 [onEvicted])。
+     * 用于 unlimited(capacity=Int.MAX_VALUE)模式下按堆内存水位做兜底淘汰:此时 FIFO
+     * 上限不会触发,只能靠这里主动腾空间。target <= 0 时清空全部。
+     *
+     * 返回被淘汰的事件(最老→次老顺序),供调用方转存冷层。淘汰点精确收敛在这里,
+     * clear / setCapacity 调小的淘汰不落盘(见 EventRepository.maybeTrimForHeap)。
+     */
+    fun trimToSize(target: Int): List<BinderEvent> {
+        val evicted = ArrayList<BinderEvent>()
+        while (deque.size > target && deque.isNotEmpty()) {
+            val removed = deque.removeFirst()
+            index.remove(removed.id)
+            evicted.add(removed)
+            onEvicted?.invoke(removed)
+        }
+        return evicted
+    }
 
     fun size(): Int = deque.size
 
