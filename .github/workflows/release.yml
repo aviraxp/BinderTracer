@@ -27,15 +27,8 @@ jobs:
       # bpf2go 需要 clang/llvm-strip 编译 eBPF 字节码
       - run: sudo apt-get update && sudo apt-get install -y clang llvm
 
-      - name: Decode keystore
-        run: echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-
       - run: ./gradlew assembleDebug assembleRelease
         env:
-          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           VERSION_NAME: ${{ github.ref_name }}  # tag v1.2.3 → versionName 1.2.3 / versionCode 10203
 
       - uses: softprops/action-gh-release@v2

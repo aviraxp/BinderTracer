@@ -86,7 +86,7 @@ android {
         buildConfigField("long", "SIG_CACHE_TOTAL_SOFT_LIMIT_BYTES", "262144L")
     }
 
-    // CI 通过环境变量注入正式签名(见 .github/workflows/release.yml);本地没配时回落 debug 签名
+    // 可选通过环境变量注入自定义 release 签名;未配置时回落到默认 debug 签名
     val ciKeystore = System.getenv("KEYSTORE_FILE")
     if (ciKeystore != null) {
         signingConfigs.create("release") {
