@@ -32,7 +32,6 @@ jobs:
           VERSION_NAME: ${{ github.ref_name }}  # tag v1.2.3 → versionName 1.2.3 / versionCode 10203
 
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
             app/build/outputs/apk/debug/app-debug.apk
