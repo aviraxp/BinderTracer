@@ -18,6 +18,7 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 
 #define CHUNK_SIZE 0x400
 #define MAX_CHUNKS 16
+#define USER_ADDR_MASK 0x00FFFFFFFFFFFFFFULL
 
 // binder_dev 枚举值,与 Go 端 / app 端 BinderDev 常量保持同步
 #define BINDER_DEV_UNKNOWN  0
@@ -223,6 +224,10 @@ struct stack_trace_event {
 static __always_inline u64 get_transaction_id() {
     u64 id = bpf_ktime_get_ns();
     return id;
+}
+
+static __always_inline u64 untag_user_addr(u64 addr) {
+    return addr & USER_ADDR_MASK;
 }
 
 static __always_inline void inc_overflow(u32 slot) {
@@ -470,7 +475,8 @@ int kprobe_binder_transaction(struct pt_regs *ctx) {
 
         u64 chunk_size = ((i + 1) * CHUNK_SIZE > data_size) ? (data_size - i * CHUNK_SIZE) : CHUNK_SIZE;
 		unsigned probe_read_size = chunk_size < sizeof(binder_transaction_event->chunk_data) ? chunk_size : sizeof(binder_transaction_event->chunk_data);
-        bpf_probe_read_user(binder_transaction_event->chunk_data, probe_read_size, (void *)(data.ptr.buffer + i * CHUNK_SIZE));
+        u64 user_buffer = untag_user_addr(data.ptr.buffer + i * CHUNK_SIZE);
+        bpf_probe_read_user(binder_transaction_event->chunk_data, probe_read_size, (void *)user_buffer);
 
         bpf_ringbuf_submit(binder_transaction_event, 0);
     }
