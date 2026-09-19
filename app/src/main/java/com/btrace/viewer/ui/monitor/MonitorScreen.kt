@@ -1,6 +1,9 @@
 package com.btrace.viewer.ui.monitor
 
+import android.content.ActivityNotFoundException
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -35,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -44,6 +48,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -70,6 +75,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -107,6 +113,8 @@ import com.btrace.viewer.parser.decoders.DecodeSource
 import com.btrace.viewer.ui.apps.AppsScreen
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -115,6 +123,39 @@ fun MonitorScreen(
     viewModel: MonitorViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val eventCount by viewModel.eventCount.collectAsState()
+    val context = LocalContext.current
+    var choosingExportFile by rememberSaveable { mutableStateOf(false) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        choosingExportFile = false
+        if (uri != null) viewModel.exportTrace(context.contentResolver, uri)
+    }
+    val exportAction: @Composable () -> Unit = {
+        ExportButton(
+            enabled = eventCount > 0 && !choosingExportFile && !uiState.isExporting,
+            isExporting = uiState.isExporting,
+            onClick = {
+                val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                choosingExportFile = true
+                try {
+                    exportLauncher.launch("binder-trace-$timestamp.json")
+                } catch (e: ActivityNotFoundException) {
+                    choosingExportFile = false
+                    Toast.makeText(context, "No document picker is available", Toast.LENGTH_LONG).show()
+                }
+            },
+        )
+    }
+
+    // Keep the result handler active after monitoring stops and the app list is shown.
+    LaunchedEffect(uiState.exportMessage) {
+        uiState.exportMessage?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            viewModel.clearExportMessage()
+        }
+    }
 
     // IDLE 态让应用选择 UI 直接内联进来:上游 AppsViewModel 完成 daemon 启动 / 握手后,
     // 通过 onMonitoringStarted 回调转给 MonitorViewModel.startMonitoring(),把状态翻到
@@ -124,17 +165,15 @@ fun MonitorScreen(
         // AppsViewModel.startMonitoring 内部走 MonitoringServiceConnector,
         // controller.state 转出 IDLE 后这里 recompose 自动切到下面的事件流 UI,
         // 无需 callback。
-        AppsScreen()
+        AppsScreen(topBarActions = { exportAction() })
         return
     }
 
     val events by viewModel.displayEvents.collectAsState()
-    val eventCount by viewModel.eventCount.collectAsState()
     val eventRate by viewModel.eventRate.collectAsState()
     val coverage by viewModel.coverage.collectAsState()
     val currentFilter by viewModel.currentFilter.collectAsState()
     val selectedDetail by viewModel.selectedEvent.collectAsState()
-    val context = LocalContext.current
 
     // 显示错误消息
     LaunchedEffect(uiState.errorMessage) {
@@ -197,6 +236,7 @@ fun MonitorScreen(
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
+                    exportAction()
                     // 过滤按钮:有活跃过滤条件时用 primary 色高亮,提示用户当前列表被过滤。
                     val filterActive = !currentFilter.isEmpty()
                     IconButton(onClick = viewModel::showFilterDialog) {
@@ -344,6 +384,21 @@ fun MonitorScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ExportButton(
+    enabled: Boolean,
+    isExporting: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(enabled = enabled, onClick = onClick) {
+        if (isExporting) {
+            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(Icons.Default.FileDownload, contentDescription = "Export all events as JSON")
         }
     }
 }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.Writer
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -208,12 +209,11 @@ class EventRepository @Inject constructor(
     fun addEvent(event: BinderEvent) {
         parseEvent(event)
 
-        // 全量落盘:每条事件都归档到 DB(offer 非阻塞入队,线程安全,放锁外不拖慢热路径)。
-        coldStore?.offer(event)
-
         // BoundedEventBuffer 不是线程安全的,由调用方串行化。与 emitSnapshot / clearEvents /
         // getEvent 等共用同一把 lock。
         synchronized(lock) {
+            // offer only queues the event. Keep its order consistent with clearEvents.
+            coldStore?.offer(event)
             coverageStats.onEventAdded(event)   // 累计,窗口淘汰不再递减
             buffer.add(event)                    // 进内存窗口,满则丢最老(已落 DB)
             _eventCount.value = ++totalCount     // 全量累计,非窗口 size
@@ -411,6 +411,7 @@ class EventRepository @Inject constructor(
     fun clearEvents() {
         CLogUtils.i(TAG, "clearEvents() 清空所有事件")
         synchronized(lock) {
+            coldStore?.clear()
             // buffer 未挂 onEvicted,clear 不回调;coverageStats.reset() 显式把全量累计归零。
             buffer.clear()
             coverageStats.reset()
@@ -423,8 +424,16 @@ class EventRepository @Inject constructor(
         _filteredEvents.value = emptyList()
         _coverage.value = CoverageSnapshot.EMPTY
         dirty.set(false)
-        // 冷层清空放锁外异步:DELETE 是 IO,别阻塞调用线程(MonitorViewModel.clearEvents 非协程)。
-        scope.launch { coldStore?.clear() }
+    }
+
+    /** Export all stored events, regardless of list filters. The caller closes the writer. */
+    suspend fun exportJson(writer: Writer): Long {
+        val store = checkNotNull(coldStore) { "Event storage is unavailable" }
+        val json = TraceJsonWriter(writer)
+        val count = store.forEachExportEvent(json::writeEvent)
+        check(count > 0) { "No events to export" }
+        json.finish(count)
+        return count
     }
 
     /**

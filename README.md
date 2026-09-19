@@ -114,6 +114,37 @@ Runtime files on the device:
 | `/data/local/tmp/btrace.pid` | singleton lock |
 | `/data/local/tmp/btrace.log` | if `-f` was passed |
 
+### Export a trace
+
+Tap the download icon in the Monitor toolbar and choose a location in
+the system document picker. The suggested filename is
+`binder-trace-YYYYMMDD-HHMMSS.json`. After monitoring stops, the same
+button remains available on the app selection screen until a new
+session clears the previous events.
+
+The UTF-8 JSON file contains **all stored events**, including paired
+replies and events outside the 5,000-event live window. List filters do
+not limit the export. Once saving starts, the app waits for events
+already queued for storage and fixes the last event to include. Later
+events belong to the next export. Reading and writing happen in the
+background without loading the whole trace into memory.
+
+The file has `format: "BinderTracer"`, `version: 1`, an ISO-8601
+`exportedAt` value, an `events` array, and `eventCount`. Each event keeps
+the process and target IDs, interface and method names, decoded
+arguments and replies, parsing quality, and complete kernel/user stack
+frames. `rawParcelBase64` holds the original Parcel bytes.
+
+`id`, `pairId`, and `timestampNs` are decimal strings to preserve all
+64 bits in tools such as JavaScript. `timestampNs` is the daemon's Unix
+timestamp in nanoseconds. Pointer and stack address fields (`targetRef`,
+`pc`, and `offset`) are unsigned hexadecimal strings. Requests and
+replies can be joined by a matching nonzero `pairId`.
+
+The export button is disabled for an empty trace or while saving.
+If clearing events interrupts the export, or a file cannot be written,
+the app reports failure and attempts to delete the incomplete file.
+
 ---
 
 ## Relationship to upstream

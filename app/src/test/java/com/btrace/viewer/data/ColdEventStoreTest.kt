@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -139,5 +140,58 @@ class ColdEventStoreTest {
         )
         assertEquals(2L, store.findPair(7, wantReply = true)!!.id)
         assertEquals(1L, store.findPair(7, wantReply = false)!!.id)
+    }
+
+    @Test
+    fun `export drains queued events beyond the live window including replies`() = runBlocking {
+        for (id in 0L..5001L) {
+            store.offer(ev(id, isReply = id % 2L == 1L, pairId = id / 2 + 1))
+        }
+        val exported = ArrayList<BinderEvent>()
+        assertEquals(5002L, store.forEachExportEvent { exported.add(it) })
+        assertEquals((0L..5001L).toList(), exported.map { it.id })
+        assertEquals(2501, exported.count { it.isReply })
+    }
+
+    @Test
+    fun `export excludes events received after its boundary`() = runBlocking {
+        store.offer(ev(0))
+        store.offer(ev(1))
+        val ids = ArrayList<Long>()
+        store.forEachExportEvent {
+            ids.add(it.id)
+            if (it.id == 0L) store.offer(ev(2))
+        }
+        assertEquals(listOf(0L, 1L), ids)
+        val next = ArrayList<Long>()
+        store.forEachExportEvent { next.add(it.id) }
+        assertEquals(listOf(0L, 1L, 2L), next)
+    }
+
+    @Test
+    fun `clear stays between old and new queued events`() = runBlocking {
+        for (id in 0L..600L) store.offer(ev(id))
+        store.clear()
+        store.offer(ev(601))
+        val ids = ArrayList<Long>()
+        assertEquals(1L, store.forEachExportEvent { ids.add(it.id) })
+        assertEquals(listOf(601L), ids)
+    }
+
+    @Test
+    fun `clear during export fails instead of returning a partial trace`() = runBlocking {
+        for (id in 0L..600L) store.offer(ev(id))
+        try {
+            store.forEachExportEvent {
+                if (it.id == 0L) {
+                    store.clear()
+                    // A second export waits until the queued clear has finished.
+                    runBlocking { assertEquals(0L, store.forEachExportEvent {}) }
+                }
+            }
+            fail("A partial export must fail")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message.orEmpty().contains("cleared during export"))
+        }
     }
 }
