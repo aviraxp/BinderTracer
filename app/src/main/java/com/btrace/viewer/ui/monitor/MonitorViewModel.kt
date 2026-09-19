@@ -1,5 +1,8 @@
 package com.btrace.viewer.ui.monitor
 
+import android.content.ContentResolver
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.btrace.viewer.data.EventFilter
@@ -14,9 +17,11 @@ import com.btrace.viewer.service.MonitoringSessionController
 import com.btrace.viewer.service.MonitoringSessionState
 import com.btrace.viewer.utils.CLogUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -26,6 +31,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.IOException
 import javax.inject.Inject
 
 /** UI 用的"粗粒度"状态,与 controller 的 7 态有显式映射(下面 mapToUi)。 */
@@ -36,6 +43,8 @@ data class MonitorUiState(
     val targetAppName: String = "",
     val showFilterDialog: Boolean = false,
     val errorMessage: String? = null,
+    val isExporting: Boolean = false,
+    val exportMessage: String? = null,
     val sessionState: MonitoringSessionState = MonitoringSessionState.IDLE
 )
 
@@ -288,6 +297,35 @@ class MonitorViewModel @Inject constructor(
     }
 
     fun clearEvents() { eventRepository.clearEvents() }
+
+    fun exportTrace(resolver: ContentResolver, uri: Uri) {
+        if (_uiState.value.isExporting) return
+        _uiState.value = _uiState.value.copy(isExporting = true, exportMessage = null)
+        viewModelScope.launch {
+            try {
+                val count = withContext(Dispatchers.IO) {
+                    val output = resolver.openOutputStream(uri, "wt")
+                        ?: throw IOException("Cannot open the export file")
+                    output.bufferedWriter(Charsets.UTF_8).use { eventRepository.exportJson(it) }
+                }
+                _uiState.value = _uiState.value.copy(exportMessage = "Exported $count events")
+            } catch (e: Exception) {
+                // CreateDocument creates a new file. Remove incomplete output after failure.
+                val deleted = withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching { DocumentsContract.deleteDocument(resolver, uri) }.getOrDefault(false)
+                }
+                if (e is CancellationException) throw e
+                _uiState.value = _uiState.value.copy(
+                    exportMessage = "Export failed: ${e.message ?: "Cannot write the file"}" +
+                        if (deleted) "" else ". Please delete the incomplete file.",
+                )
+            } finally {
+                _uiState.value = _uiState.value.copy(isExporting = false)
+            }
+        }
+    }
+
+    fun clearExportMessage() { _uiState.value = _uiState.value.copy(exportMessage = null) }
 
     /**
      * 检索模式(有过滤)滑到底:加载下一页更旧的匹配 append 到列表尾。

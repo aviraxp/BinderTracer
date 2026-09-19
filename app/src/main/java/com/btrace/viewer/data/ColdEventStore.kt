@@ -19,10 +19,13 @@ import com.btrace.viewer.parser.decoders.Confidence
 import com.btrace.viewer.parser.decoders.DecodeSource
 import com.btrace.viewer.utils.CLogUtils
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -259,28 +262,100 @@ class ColdEventStore @Inject constructor(
 
     private val helper = Helper(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val queue = Channel<BinderEvent>(Channel.UNLIMITED)
+    private sealed interface WriteRequest {
+        data class Append(val event: BinderEvent) : WriteRequest
+        object Clear : WriteRequest
+        data class Export(val result: CompletableDeferred<ExportSnapshot>) : WriteRequest
+    }
+
+    private data class ExportSnapshot(val lastId: Long, val count: Long)
+
+    private val queue = Channel<WriteRequest>(Channel.UNLIMITED)
 
     init {
         scope.launch {
             val batch = ArrayList<BinderEvent>(BATCH)
-            for (first in queue) {
-                batch.add(first)
-                while (batch.size < BATCH) {
-                    val more = queue.tryReceive().getOrNull() ?: break
-                    batch.add(more)
+            var pending: WriteRequest? = null
+            var writeFailure: Throwable? = null
+            while (true) {
+                val request = pending ?: queue.receive()
+                pending = null
+                when (request) {
+                    is WriteRequest.Append -> {
+                        batch.add(request.event)
+                        while (batch.size < BATCH) {
+                            val more = queue.tryReceive().getOrNull() ?: break
+                            if (more !is WriteRequest.Append) {
+                                pending = more
+                                break
+                            }
+                            batch.add(more.event)
+                        }
+                        runCatching { writeBatch(batch) }.onFailure {
+                            writeFailure = it
+                            CLogUtils.w(TAG, "Failed to store ${batch.size} events: ${it.message}")
+                        }
+                        batch.clear()
+                    }
+                    WriteRequest.Clear -> {
+                        writeFailure = runCatching {
+                            helper.writableDatabase.delete(ColdEventCodec.TABLE, null, null)
+                        }.exceptionOrNull()
+                    }
+                    is WriteRequest.Export -> {
+                        runCatching {
+                            check(writeFailure == null) { "Some events could not be stored. Clear the trace and try again." }
+                            helper.readableDatabase.rawQuery(
+                                "SELECT MAX(${ColdEventCodec.COL_SEQ}), COUNT(*) FROM ${ColdEventCodec.TABLE}",
+                                null,
+                            ).use { c ->
+                                c.moveToFirst()
+                                ExportSnapshot(if (c.isNull(0)) -1L else c.getLong(0), c.getLong(1))
+                            }
+                        }.fold(request.result::complete, request.result::completeExceptionally)
+                    }
                 }
-                runCatching { writeBatch(batch) }
-                    .onFailure { CLogUtils.w(TAG, "writeBatch 失败,丢弃 ${batch.size} 条: ${it.message}") }
-                batch.clear()
             }
         }
     }
 
     /** 归档单条(非阻塞,fire-and-forget)。全量落盘:每条事件都进这里。 */
     fun offer(event: BinderEvent) {
-        queue.trySend(event)
+        queue.trySend(WriteRequest.Append(event))
     }
+
+    /** Wait for queued events, then export in id order, including replies hidden in the list. */
+    internal suspend fun forEachExportEvent(consume: (BinderEvent) -> Unit): Long =
+        withContext(Dispatchers.IO) {
+            val result = CompletableDeferred<ExportSnapshot>()
+            queue.send(WriteRequest.Export(result))
+            val snapshot = result.await()
+            var lastId = -1L
+            var count = 0L
+            while (lastId < snapshot.lastId && count < snapshot.count) {
+                currentCoroutineContext().ensureActive()
+                var pageCount = 0
+                helper.readableDatabase.query(
+                    ColdEventCodec.TABLE, null,
+                    "${ColdEventCodec.COL_SEQ} > ? AND ${ColdEventCodec.COL_SEQ} <= ?",
+                    arrayOf(lastId.toString(), snapshot.lastId.toString()),
+                    null, null, "${ColdEventCodec.COL_SEQ} ASC", BATCH.toString(),
+                ).use { c ->
+                    while (c.moveToNext()) {
+                        currentCoroutineContext().ensureActive()
+                        val event = ColdEventCodec.fromRow(cursorToRow(c))
+                        consume(event)
+                        lastId = event.id
+                        count++
+                        pageCount++
+                    }
+                }
+                if (pageCount == 0) break
+            }
+            // IDs increase within this process. Clearing events must not produce a partial success.
+            check(count == snapshot.count) { "Events were cleared during export. Please try again." }
+            count
+        }
 
     /** 单测钩子:同步落盘,绕开异步 channel,专测 query 的 SQL 过滤/分页正确性。 */
     @androidx.annotation.VisibleForTesting
@@ -343,9 +418,9 @@ class ColdEventStore @Inject constructor(
         )
     }
 
-    suspend fun clear() = withContext(Dispatchers.IO) {
-        runCatching { helper.writableDatabase.delete(ColdEventCodec.TABLE, null, null) }
-        Unit
+    fun clear() {
+        // Use the same queue so older writes cannot restore events after DELETE.
+        queue.trySend(WriteRequest.Clear)
     }
 
     /**
@@ -374,7 +449,9 @@ class ColdEventStore @Inject constructor(
             for (e in events) {
                 val cv = ContentValues()
                 for ((k, v) in ColdEventCodec.toRow(e)) putValue(cv, k, v)
-                db.insertWithOnConflict(ColdEventCodec.TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+                check(db.insertWithOnConflict(ColdEventCodec.TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE) != -1L) {
+                    "Failed to store event ${e.id}"
+                }
             }
             db.setTransactionSuccessful()
         } finally {

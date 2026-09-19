@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -61,7 +62,8 @@ import com.btrace.viewer.model.AppInfo
 @Composable
 fun AppsScreen(
     viewModel: AppsViewModel = hiltViewModel(),
-    onMonitoringStarted: (appName: String, targetUid: Int) -> Unit = { _, _ -> }
+    onMonitoringStarted: (appName: String, targetUid: Int) -> Unit = { _, _ -> },
+    topBarActions: @Composable RowScope.() -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -96,6 +98,7 @@ fun AppsScreen(
         topBar = {
             TopAppBar(
                 title = { Text("选择监控目标") },
+                actions = topBarActions,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
