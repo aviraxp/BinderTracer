@@ -69,16 +69,19 @@ class AppRepository @Inject constructor(
     }
 
     /**
-     * 反查 uid 对应的「显示名」:app uid 走 PackageManager 拿包名,
-     * 系统 uid (<10000) 走 [SystemUidNames] 助记名,都查不到返回 null。
+     * 反查 uid 对应的「显示名」:系统 uid 优先走 [SystemUidNames] 助记名,
+     * 其余 uid 只在 PackageManager 返回唯一包名时使用,无法唯一确定则返回 null。
      *
      * 用途:request 帧的 toUid 反查目标进程/服务的可读标签。系统 binder 服务
-     * (system_server / audioserver / surfaceflinger 等)走 system uid 区间,
-     * PackageManager 查不到包,但用语义名 "system" / "audioserver" 已足够定位。
+     * (system_server / audioserver / surfaceflinger 等)走 system uid 区间。
+     * UID 1000 也可能查出多个系统应用,这些包不能代表 system_server。
+     * getPackagesForUid 返回的是共享该 uid 的所有包,并不表示当前接收者:
+     * frameworks/base/core/java/android/content/pm/PackageManager.java
+     * (android-14.0.0_r1, lines 6663-6676)。
      */
     fun getPackageOrSystemNameForUid(uid: Int): String? {
         if (uid <= 0) return null
-        return getPackageNameForUid(uid) ?: SystemUidNames.lookup(uid)
+        return SystemUidNames.lookup(uid) ?: packageManager.getPackagesForUid(uid)?.singleOrNull()
     }
 
     /**

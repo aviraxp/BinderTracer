@@ -4,10 +4,10 @@ package com.btrace.viewer.data
  * Android 系统 uid 语义名映射(uid < 10000 即非应用 uid)。
  *
  * 数据源:`platform/system/core/libcutils/include/private/android_filesystem_config.h`
- * 仅收常见的、UI 列表里出现频率高的;遗漏 uid 时回 "uid:N" 兜底。
+ * 仅收常见的、UI 列表里出现频率高的;未收录的 uid 返回 null。
  *
- * 不变量:本表与 PackageManager 反查互斥 —— PackageManager 反查得到的是 app uid
- * (>= 10000)的包名,本表回的是系统 uid 的助记名。
+ * 系统 uid 也可能被多个应用共享(例如 UID 1000)。接收者显示优先使用本表的
+ * uid 助记名,避免把系统服务误标成共享该 uid 的某个应用。
  */
 object SystemUidNames {
     private val table: Map<Int, String> = mapOf(

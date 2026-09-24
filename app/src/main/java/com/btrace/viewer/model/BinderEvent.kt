@@ -123,9 +123,9 @@ data class BinderEvent(
 
     /**
      * 目标进程的可读名(server 端):
-     *   - app uid (>=10000):PackageManager 反查得到的包名,如 com.miui.audiomonitor
+     *   - app uid (>=10000):PackageManager 返回的唯一包名,如 com.miui.audiomonitor
      *   - 系统 uid (<10000):SystemUidNames 助记名,如 "system" / "audioserver"
-     *   - 反查失败 / toUid==0:null
+     *   - 多个包共享 app uid / 反查失败 / toUid==0:null,仍可用 toPid/toUid 定位
      *
      * EventRepository.parseEvent 在拿到 toUid 后填入。与 callerPackage(基于 sender uid)
      * 互补:request 帧上 callerPackage=client 包,toPackage=server 包/系统名。
