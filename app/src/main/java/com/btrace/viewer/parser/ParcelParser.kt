@@ -73,14 +73,6 @@ class ParcelParser constructor(
      * 单个 decoder 抛异常时,流水线吞掉错误继续走下一档(以"事件不丢"为最高优先级)。
      */
     fun decodePipeline(event: BinderEvent): DecodeResult {
-        // spec § 6.3.2:进入 decoder 链之前无条件 record。pairer 内部按 isReply / pairId /
-        // targetUid 自行过滤,这里不重复判断;失败也不能阻断流水线,捕获异常吞掉。
-        try {
-            transactionPairer.recordRequest(event, currentTargetUid)
-        } catch (t: Throwable) {
-            CLogUtils.w(TAG, "transactionPairer.recordRequest 抛异常,跳过: ${t.message}")
-        }
-
         for (decoder in pipeline) {
             try {
                 decoder.tryDecode(event)?.let { return it }
@@ -89,6 +81,11 @@ class ParcelParser constructor(
             }
         }
         error("TargetRefDecoder 必须兜底,流水线不应该走到这里")
+    }
+
+    /** 请求解析完成后再记录,让回复能拿到接口、方法和候选包。 */
+    fun recordParsedRequest(event: BinderEvent) {
+        transactionPairer.recordRequest(event, currentTargetUid)
     }
 
     /**

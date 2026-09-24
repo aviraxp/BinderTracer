@@ -559,22 +559,6 @@ private fun EventCard(
 }
 
 /**
- * 详情页"方向"行的纯文本标签。和 [DirectionBadge] 共用一套语义。
- */
-private fun directionLabel(direction: Direction, isReplyFallback: Boolean): String {
-    val resolved = if (direction == Direction.UNKNOWN) {
-        if (isReplyFallback) Direction.INCOMING_REPLY else Direction.OUTGOING_REQUEST
-    } else direction
-    return when (resolved) {
-        Direction.OUTGOING_REQUEST -> "→ 请求 (出向)"
-        Direction.INCOMING_REQUEST -> "← 请求 (入向)"
-        Direction.OUTGOING_REPLY -> "→ 回复 (出向)"
-        Direction.INCOMING_REPLY -> "← 回复 (入向)"
-        Direction.UNKNOWN -> "未知"
-    }
-}
-
-/**
  * 方向 badge(spec § 6.5):4 个具名方向 + UNKNOWN 兜底。
  *   → 请求 / ← 请求 / → 回复 / ← 回复 / ·
  * 箭头视角统一为"目标 App",→ 表示目标 App 主动发出,← 表示目标 App 被动接收。
@@ -817,7 +801,7 @@ private fun EventDetailSheet(
             }
 
             DetailRow("时间", event.formattedFullTime, mono = true)
-            DetailRow("方向", directionLabel(event.direction, event.isReply))
+            DetailRow("方向", event.directionLabel)
             DetailRow("PID", event.pid.toString(), mono = true)
             DetailRow("UID", event.uid.toString(), mono = true)
             DetailRow("调用方", event.callerPackage,

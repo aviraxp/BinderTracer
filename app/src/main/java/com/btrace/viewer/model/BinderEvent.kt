@@ -205,6 +205,21 @@ data class BinderEvent(
      */
     val callee: String get() = interfaceName.substringAfterLast(".")
 
+    /** 详情页和导出的方向文本,与方向 badge 使用同一套语义。 */
+    val directionLabel: String
+        get() {
+            val resolved = if (direction == Direction.UNKNOWN) {
+                if (isReply) Direction.INCOMING_REPLY else Direction.OUTGOING_REQUEST
+            } else direction
+            return when (resolved) {
+                Direction.OUTGOING_REQUEST -> "→ 请求 (出向)"
+                Direction.INCOMING_REQUEST -> "← 请求 (入向)"
+                Direction.OUTGOING_REPLY -> "→ 回复 (出向)"
+                Direction.INCOMING_REPLY -> "← 回复 (入向)"
+                Direction.UNKNOWN -> "未知"
+            }
+        }
+
     /**
      * 格式化时间戳显示
      */

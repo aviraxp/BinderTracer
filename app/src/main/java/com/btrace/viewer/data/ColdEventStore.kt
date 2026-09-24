@@ -12,6 +12,7 @@ import com.btrace.viewer.model.StackFrame
 import com.btrace.viewer.model.StackQuality
 import com.btrace.viewer.model.StackTrace
 import com.btrace.viewer.model.TargetKind
+import com.btrace.viewer.model.isOneway
 import com.btrace.viewer.parser.CoverageBucket
 import com.btrace.viewer.parser.DecodedArgument
 import com.btrace.viewer.parser.ReplyParser
@@ -324,8 +325,8 @@ class ColdEventStore @Inject constructor(
         queue.trySend(WriteRequest.Append(event))
     }
 
-    /** Wait for queued events, then export in id order, including replies hidden in the list. */
-    internal suspend fun forEachExportEvent(consume: (BinderEvent) -> Unit): Long =
+    /** Export each event and its pair within the same boundary, including hidden replies. */
+    internal suspend fun forEachExportEvent(consume: (BinderEvent, BinderEvent?) -> Unit): Long =
         withContext(Dispatchers.IO) {
             val result = CompletableDeferred<ExportSnapshot>()
             queue.send(WriteRequest.Export(result))
@@ -344,7 +345,14 @@ class ColdEventStore @Inject constructor(
                     while (c.moveToNext()) {
                         currentCoroutineContext().ensureActive()
                         val event = ColdEventCodec.fromRow(cursorToRow(c))
-                        consume(event)
+                        val linked = if (event.pairId != 0L && (event.isReply || !isOneway(event.flags))) {
+                            queryOne(
+                                "${ColdEventCodec.COL_PAIR_ID} = ? AND ${ColdEventCodec.COL_IS_REPLY} = ? " +
+                                    "AND ${ColdEventCodec.COL_SEQ} <= ?",
+                                arrayOf(event.pairId.toString(), if (event.isReply) "0" else "1", snapshot.lastId.toString()),
+                            )
+                        } else null
+                        consume(event, linked)
                         lastId = event.id
                         count++
                         pageCount++

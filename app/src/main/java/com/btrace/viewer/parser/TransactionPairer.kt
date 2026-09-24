@@ -1,6 +1,7 @@
 package com.btrace.viewer.parser
 
 import com.btrace.viewer.model.BinderEvent
+import com.btrace.viewer.parser.decoders.DecodeSource
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,19 +49,18 @@ class TransactionPairer @Inject constructor() {
         const val MAX_ENTRIES = 4096
     }
 
-    /**
-     * 配对成功后给 ReplyDecoder 的回填载体。只携带继承所需的最小字段;返回类型继承等
-     * 由 P5 完成,本期只补 interface + method。
-     */
+    /** 回复解析需要的请求信息。不保留原始 Parcel,避免配对表占用过多内存。 */
     data class PairResult(
         val interfaceName: String?,
         val methodName: String?,
+        val code: Int,
+        val resolveCandidates: List<String>,
+        val decodeSource: DecodeSource?,
     )
 
     /** 一条 pending 请求。enqueuedAtMs 用于 TTL / LRU。 */
     private data class PendingRequest(
-        val interfaceName: String?,
-        val methodName: String?,
+        val result: PairResult,
         val enqueuedAtMs: Long,
     )
 
@@ -84,7 +84,7 @@ class TransactionPairer @Inject constructor() {
     /**
      * 把请求落入对应方向的表;reply 帧 / pairId == 0 / 没拿到方向 自动 noop。
      *
-     * 调用方契约:在进入 decoder 流水线之前**无条件**调一次,过滤逻辑全在本方法里,
+     * 调用方契约:在请求解析完成后调一次,过滤逻辑全在本方法里,
      * 让 ParcelParser 不必理会方向判断。
      */
     fun recordRequest(event: BinderEvent, targetUid: Int) {
@@ -99,8 +99,13 @@ class TransactionPairer @Inject constructor() {
 
         val now = clockProvider()
         val entry = PendingRequest(
-            interfaceName = event.interfaceName.takeIf { it != "Unknown" },
-            methodName = event.methodName.takeIf { it != "code=${event.code}" },
+            result = PairResult(
+                interfaceName = event.interfaceName.takeIf { it != "Unknown" },
+                methodName = event.methodName.takeIf { it != "code=${event.code}" },
+                code = event.code,
+                resolveCandidates = event.resolveCandidates,
+                decodeSource = event.decodeSource,
+            ),
             enqueuedAtMs = now,
         )
 
@@ -136,10 +141,7 @@ class TransactionPairer @Inject constructor() {
         // TTL 过期(进了表但 evict 没来得及扫)→ 视作未命中,丢弃
         if (clockProvider() - pending.enqueuedAtMs > TTL_MS) return null
 
-        return PairResult(
-            interfaceName = pending.interfaceName,
-            methodName = pending.methodName,
-        )
+        return pending.result
     }
 
     private fun putAndEvict(

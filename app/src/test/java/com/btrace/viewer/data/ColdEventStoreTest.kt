@@ -148,7 +148,7 @@ class ColdEventStoreTest {
             store.offer(ev(id, isReply = id % 2L == 1L, pairId = id / 2 + 1))
         }
         val exported = ArrayList<BinderEvent>()
-        assertEquals(5002L, store.forEachExportEvent { exported.add(it) })
+        assertEquals(5002L, store.forEachExportEvent { event, _ -> exported.add(event) })
         assertEquals((0L..5001L).toList(), exported.map { it.id })
         assertEquals(2501, exported.count { it.isReply })
     }
@@ -158,13 +158,13 @@ class ColdEventStoreTest {
         store.offer(ev(0))
         store.offer(ev(1))
         val ids = ArrayList<Long>()
-        store.forEachExportEvent {
-            ids.add(it.id)
-            if (it.id == 0L) store.offer(ev(2))
+        store.forEachExportEvent { event, _ ->
+            ids.add(event.id)
+            if (event.id == 0L) store.offer(ev(2))
         }
         assertEquals(listOf(0L, 1L), ids)
         val next = ArrayList<Long>()
-        store.forEachExportEvent { next.add(it.id) }
+        store.forEachExportEvent { event, _ -> next.add(event.id) }
         assertEquals(listOf(0L, 1L, 2L), next)
     }
 
@@ -174,7 +174,7 @@ class ColdEventStoreTest {
         store.clear()
         store.offer(ev(601))
         val ids = ArrayList<Long>()
-        assertEquals(1L, store.forEachExportEvent { ids.add(it.id) })
+        assertEquals(1L, store.forEachExportEvent { event, _ -> ids.add(event.id) })
         assertEquals(listOf(601L), ids)
     }
 
@@ -182,16 +182,38 @@ class ColdEventStoreTest {
     fun `clear during export fails instead of returning a partial trace`() = runBlocking {
         for (id in 0L..600L) store.offer(ev(id))
         try {
-            store.forEachExportEvent {
-                if (it.id == 0L) {
+            store.forEachExportEvent { event, _ ->
+                if (event.id == 0L) {
                     store.clear()
                     // A second export waits until the queued clear has finished.
-                    runBlocking { assertEquals(0L, store.forEachExportEvent {}) }
+                    runBlocking { assertEquals(0L, store.forEachExportEvent { _, _ -> }) }
                 }
             }
             fail("A partial export must fail")
         } catch (e: IllegalStateException) {
             assertTrue(e.message.orEmpty().contains("cleared during export"))
         }
+    }
+
+    @Test
+    fun `export links pairs across pages without including later replies`() = runBlocking {
+        store.offer(ev(0, pairId = 7))
+        for (id in 1L..500L) store.offer(ev(id))
+        store.offer(ev(501, isReply = true, pairId = 7))
+        store.offer(ev(502, pairId = 8))
+
+        val pairs = mutableMapOf<Long, Long?>()
+        val count = store.forEachExportEvent { event, linked ->
+            pairs[event.id] = linked?.id
+            if (event.id == 0L) {
+                // Write after the boundary but before the matching request is exported.
+                store.writeNowForTest(listOf(ev(503, isReply = true, pairId = 8)))
+            }
+        }
+        assertEquals(503L, count)
+        assertEquals(501L, pairs[0])
+        assertEquals(0L, pairs[501])
+        assertNull(pairs[502])
+        assertFalse(pairs.containsKey(503))
     }
 }

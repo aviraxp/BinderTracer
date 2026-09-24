@@ -135,7 +135,20 @@ the process and target IDs, interface and method names, decoded
 arguments and replies, parsing quality, and complete kernel/user stack
 frames. `rawParcelBase64` holds the original Parcel bytes.
 
-`id`, `pairId`, and `timestampNs` are decimal strings to preserve all
+For reading, each event also includes `formattedTime` (device local time),
+`directionLabel`, `callMode`, and `flagsHex`. Stack frames have the same
+`displayText` as the detail screen. The `request` object contains the
+method and decoded arguments; `response` contains the decoded return
+value or exception and `latencyMs`. Both objects include their `eventId`,
+so a request and its reply can be read together without a manual join.
+Linked events always come from the same export boundary.
+
+`responseStatus` is `received`, `oneway` (no reply expected), `unpaired`
+(no pair ID), or `notCaptured` (no reply within this export). Missing
+requests or responses are `null`. Decoding uses the same results as the
+UI: unsupported values retain their parse status or raw hex hint.
+
+`id`, `eventId`, `pairId`, and `timestampNs` are decimal strings to preserve all
 64 bits in tools such as JavaScript. `timestampNs` is the daemon's Unix
 timestamp in nanoseconds. Pointer and stack address fields (`targetRef`,
 `pc`, and `offset`) are unsigned hexadecimal strings. Requests and

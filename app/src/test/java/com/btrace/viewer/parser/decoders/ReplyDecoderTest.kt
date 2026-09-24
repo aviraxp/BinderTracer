@@ -1,6 +1,7 @@
 package com.btrace.viewer.parser.decoders
 
 import com.btrace.viewer.model.BinderEvent
+import com.btrace.viewer.model.BinderDev
 import com.btrace.viewer.parser.MethodResolver
 import com.btrace.viewer.parser.MethodSignature
 import com.btrace.viewer.parser.TransactionPairer
@@ -13,6 +14,7 @@ import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
 
 /**
@@ -145,16 +147,19 @@ class ReplyDecoderTest {
         assertNotNull("orphan reply 应至少有 parsedReply 容器", event.parsedReply)
     }
 
-    // ─── spec 2026-05-03 § 3.5 / § 2.1 接口对齐:event.resolveCandidates 透传 ───
+    // 回复要使用请求的 code 和候选包查签名。
 
     @Test
-    fun reply_paired_passesResolveCandidatesToMethodResolver() {
-        // matched 命中 + event.resolveCandidates = ["P", "Q"] →
+    fun reply_paired_usesRequestCodeAndCandidates() {
+        // matched 命中 + 请求的 resolveCandidates = ["P", "Q"] →
         // MethodResolver.getMethodSignature 应收到 candidates=["P", "Q"]
         val pairer: TransactionPairer = mock()
         val matched = TransactionPairer.PairResult(
             interfaceName = "com.example.IFoo",
             methodName = "doSomething",
+            code = 5,
+            resolveCandidates = listOf("P", "Q"),
+            decodeSource = DecodeSource.AIDL_Q,
         )
         whenever(pairer.tryMatchReply(any(), any())).thenReturn(matched)
 
@@ -169,11 +174,12 @@ class ReplyDecoderTest {
         )
 
         val event = BinderEvent(
-            id = 1, timestamp = 0, pid = 1, uid = 1, code = 5, flags = 0,
+            id = 1, timestamp = 0, pid = 1, uid = 1, code = 0, flags = 0,
             rawParcel = ByteArray(0),
             isReply = true, pairId = 99L,
+            binderDev = BinderDev.BINDER,
         ).apply {
-            resolveCandidates = listOf("P", "Q")
+            resolveCandidates = listOf("server.package")
         }
 
         decoderUnderTest.tryDecode(event)
@@ -187,5 +193,29 @@ class ReplyDecoderTest {
             any(),
         )
         assertEquals(listOf("P", "Q"), captor.firstValue)
+    }
+
+    @Test
+    fun reply_paired_hidl_does_not_decode_status_as_java_exception() {
+        val pairer = TransactionPairer()
+        pairer.recordRequest(ev(isReply = false, pairId = 1).apply {
+            interfaceName = "android.hardware.test@1.0::ITest"
+            methodName = "getValue"
+            decodeSource = DecodeSource.HIDL_DESCRIPTOR
+        }, 1)
+        val resolver: MethodResolver = mock()
+        val event = ev(isReply = true, pairId = 1).copy(
+            uid = 2,
+            binderDev = BinderDev.HWBINDER,
+            rawParcel = ByteArray(8) { -1 },
+        )
+
+        ReplyDecoder(pairer, { 1 }, resolver).tryDecode(event)
+
+        assertNotNull(event.parsedReply)
+        assertNull(event.parsedReply!!.exception)
+        assertNull(event.parsedReply!!.value)
+        assertEquals("FF FF FF FF FF FF FF FF", event.parsedReply!!.rawHexHint)
+        verifyNoInteractions(resolver)
     }
 }

@@ -83,6 +83,10 @@ class TraceJsonWriterTest {
         assertEquals("send", json.getString("methodName"))
         assertEquals("system", json.getString("toPackage"))
         assertEquals("INCOMING_REPLY", json.getString("direction"))
+        assertEquals(event.formattedFullTime, json.getString("formattedTime"))
+        assertEquals("← 回复 (入向)", json.getString("directionLabel"))
+        assertEquals("reply", json.getString("callMode"))
+        assertEquals("0x80000000", json.getString("flagsHex"))
         assertEquals("REPLY", json.getString("decodeSource"))
         assertEquals("HIGH", json.getString("confidence"))
         val arg = json.getJSONArray("parsedArgs").getJSONObject(0)
@@ -94,6 +98,11 @@ class TraceJsonWriterTest {
         assertEquals("partial stack", stack.getString("failureReason"))
         assertEquals("0xffffffffffffffff", stack.getJSONArray("kernelFrames").getJSONObject(0).getString("pc"))
         assertEquals("/system/lib64/libbinder.so", stack.getJSONArray("userFrames").getJSONObject(0).getString("module"))
+        assertEquals("libbinder.so!transact + 0x20", stack.getJSONArray("userFrames").getJSONObject(0).getString("displayText"))
+        assertTrue(json.isNull("request"))
+        assertEquals("received", json.getString("responseStatus"))
+        assertTrue(json.getJSONObject("response").isNull("latencyMs"))
+        assertEquals("example.Error", json.getJSONObject("response").getJSONObject("parsedReply").getString("exception"))
         assertEquals("String", json.getJSONArray("sniffedSignature").getString(0))
         assertEquals("example.client", json.getJSONArray("resolveCandidates").getString(0))
     }
@@ -118,5 +127,24 @@ class TraceJsonWriterTest {
         }
         assertEquals("", first.getString("rawParcelBase64"))
         assertEquals(0, first.getJSONArray("parsedArgs").length())
+        assertEquals("unpaired", first.getString("responseStatus"))
+        assertTrue(first.isNull("response"))
+    }
+
+    @Test
+    fun `distinguishes oneway requests from missing replies`() {
+        val output = StringWriter()
+        TraceJsonWriter(output).apply {
+            writeEvent(BinderEvent(0, 0, 1, 1, 1, 1, byteArrayOf(), pairId = 7))
+            writeEvent(BinderEvent(1, 0, 1, 1, 1, 0, byteArrayOf(), pairId = 8))
+            finish(2)
+        }
+        val events = JSONObject(output.toString()).getJSONArray("events")
+        assertEquals("oneway", events.getJSONObject(0).getString("responseStatus"))
+        assertEquals("oneway", events.getJSONObject(0).getString("callMode"))
+        assertEquals("notCaptured", events.getJSONObject(1).getString("responseStatus"))
+        assertEquals("twoway", events.getJSONObject(1).getString("callMode"))
+        assertTrue(events.getJSONObject(0).isNull("response"))
+        assertTrue(events.getJSONObject(1).isNull("response"))
     }
 }

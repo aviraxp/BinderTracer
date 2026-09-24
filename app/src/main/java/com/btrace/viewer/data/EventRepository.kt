@@ -208,6 +208,7 @@ class EventRepository @Inject constructor(
      */
     fun addEvent(event: BinderEvent) {
         parseEvent(event)
+        parcelParser.recordParsedRequest(event)
 
         // BoundedEventBuffer 不是线程安全的,由调用方串行化。与 emitSnapshot / clearEvents /
         // getEvent 等共用同一把 lock。

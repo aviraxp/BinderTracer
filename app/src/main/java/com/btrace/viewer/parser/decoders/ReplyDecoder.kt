@@ -22,8 +22,7 @@ import com.btrace.viewer.parser.TransactionPairer
  * 仅继承 interface/method 的旧行为。生产路径在 [com.btrace.viewer.di.AppModule] 注入。
  *
  * [targetUidProvider] 由 ParcelParser 注入,跟随 EventRepository.setTargetUid 动态变化;
- * 配对时序由 EventRepository → ParcelParser.decodePipeline 在进 decoder 前 record
- * 已经保证。
+ * EventRepository 在请求解析完成后记录配对信息。
  */
 class ReplyDecoder(
     private val pairer: TransactionPairer? = null,
@@ -106,18 +105,26 @@ class ReplyDecoder(
             )
         }
 
-        // spec 2026-05-03 § 3.5 / § 2.1:本 spec 改动 = 接口对齐,语义等价。
-        // 入参从 event.callerPackage 改为 event.resolveCandidates(reply 自己的 sender 候选)。
-        // **不**用 matched.resolveCandidates —— 那是 P4-B 范畴(扩 PairResult 字段)。
+        val isJavaAidl = event.binderDev == BinderDev.BINDER && when (matched.decodeSource) {
+            DecodeSource.AIDL_Q, DecodeSource.AIDL_P, DecodeSource.AIDL_O -> true
+            else -> false
+        }
+        // reply 的 code 和发送方不代表原始调用,查签名必须用请求的信息。
         val signature = try {
-            methodResolver.getMethodSignature(matched.interfaceName, event.code, event.resolveCandidates)
+            if (isJavaAidl) methodResolver.getMethodSignature(
+                matched.interfaceName, matched.code, matched.resolveCandidates,
+            ) else null
         } catch (_: Throwable) {
             null
         }
         val returnType = signature?.returnType
 
         val replyResult = try {
-            ReplyParser.decodeJavaAidlReply(event.rawParcel, returnType)
+            if (isJavaAidl) {
+                ReplyParser.decodeJavaAidlReply(event.rawParcel, returnType)
+            } else {
+                ReplyParser.ReplyDecodeResult(null, null, formatRawHexHint(event.rawParcel))
+            }
         } catch (_: Throwable) {
             null
         }
